@@ -17,7 +17,9 @@
   
   ;; Step 1: Generate Excel from rules
   (println "Step 1: Generating Excel from rules...")
-  (let [temp-file "test-roundtrip.xlsx"]
+  ;; Ensure target directory exists
+  (io/make-parents "target/dummy.txt")
+  (let [temp-file "target/test-roundtrip.xlsx"]
     (c/rules->excel r/RulesDefinition r/RulesAssertions temp-file)
     
     ;; Step 2: Read Excel back to assertions
@@ -45,10 +47,7 @@
             (println "\nRead-back assertions:")
             (pp/pprint read-assertions)))
         
-        ;; Clean up temp file
-        (io/delete-file temp-file true)
-        
-        ;; Return test result
+        ;; Return test result (file is kept for inspection)
         test-passed?))))
 
 (defn -main

@@ -1,63 +1,87 @@
 (ns reader
   (:require [malli.core :as m]
+            [malli.transform :as mt]
             [dk.ative.docjure.spreadsheet :as ss]
-            [clojure.java.io :as io]))
+            [clojure.java.io :as io]
+            [clojure.set :as set]))
 
-(defn get-schema-properties
-  "Extract properties from a Malli schema, returning field name and title"
-  [schema]
-  (when schema
-    (let [children (m/children schema)]
-      (map (fn [child]
-             (let [field-name (first child)
-                   props (when (> (count child) 1) 
-                          (second child))]
-               {:field field-name
-                :title (get props :title (name field-name))}))
-           children))))
+(defn excel-row->map
+  "Convert an Excel row to a map using column headers as keys"
+  [headers row]
+  (let [cells (map ss/read-cell row)]
+    (into {} 
+          (map-indexed (fn [idx header]
+                        [header (nth cells idx nil)])
+                      headers))))
 
-(defn parse-value
-  "Parse a cell value to appropriate type"
-  [value]
-  (cond
-    (nil? value) nil
-    (boolean? value) value
-    (number? value) (str value)
-    (= "true" (str value)) true
-    (= "false" (str value)) false
-    :else (str value)))
-
-(defn read-sheet-assertions
-  "Read assertions from a single sheet"
-  [sheet phaze]
+(defn read-excel-to-maps
+  "Step 1: Read Excel sheet data as vector of maps with headers as keys"
+  [sheet]
   (let [rows (ss/row-seq sheet)
         header-row (first rows)
         headers (map ss/read-cell header-row)
-        data-rows (rest rows)
-        input-props (get-schema-properties (:input phaze))
-        phaze-output-props (get-schema-properties (:phaze-output phaze))
-        engine-outcome-props (get-schema-properties (:engine-outcome phaze))
-        input-count (count input-props)
-        output-count (count phaze-output-props)]
-    (map (fn [row]
-           (let [cells (map ss/read-cell row)
-                 phaze-id (first cells)
-                 input-values (take input-count (drop 1 cells))
-                 output-values (take output-count (drop (+ 1 input-count) cells))
-                 outcome-values (drop (+ 1 input-count output-count) cells)]
-             {:input (into {} (map-indexed 
-                              (fn [idx prop] 
-                                [(:field prop) (parse-value (nth input-values idx nil))])
-                              input-props))
-              :phaze-output (into {} (map-indexed 
-                                      (fn [idx prop] 
-                                        [(:field prop) (parse-value (nth output-values idx nil))])
-                                      phaze-output-props))
-              :engine-outcome (into {} (map-indexed 
-                                        (fn [idx prop] 
-                                          [(:field prop) (parse-value (nth outcome-values idx nil))])
-                                        engine-outcome-props))}))
-         data-rows)))
+        data-rows (rest rows)]
+    (mapv #(excel-row->map headers %) data-rows)))
+
+(defn get-schema-rename-mapping
+  "Extract field name to title mapping from a schema"
+  [schema]
+  (when schema
+    (let [children (m/children schema)]
+      (into {}
+            (map (fn [child]
+                   (let [field-name (first child)
+                         props (when (> (count child) 1) 
+                                (second child))
+                         title (get props :title (name field-name))]
+                     [title field-name]))
+                 children)))))
+
+(defn build-rename-keys-map
+  "Step 2: Build complete rename mapping from all three schemas"
+  [phaze]
+  (merge (get-schema-rename-mapping (:input phaze))
+         (get-schema-rename-mapping (:phaze-output phaze))
+         (get-schema-rename-mapping (:engine-outcome phaze))))
+
+(defn rename-keys-in-map
+  "Rename keys in a map according to the rename mapping"
+  [m rename-map]
+  (set/rename-keys m rename-map))
+
+(defn coerce-and-merge
+  "Step 3: Coerce data using all three schemas and merge results"
+  [row input-schema phaze-output-schema engine-outcome-schema]
+  (let [;; Use strip-extra-keys-transformer to remove fields not in schema
+        strip-transformer (mt/strip-extra-keys-transformer)
+        excel-transformer (mt/transformer {:name :excel})
+        ;; Compose transformers: first strip extra keys, then apply excel transformations
+        combined-transformer (mt/transformer strip-transformer excel-transformer)
+        ;; Decode with the combined transformer
+        input-data (m/decode input-schema row combined-transformer)
+        phaze-output-data (m/decode phaze-output-schema row combined-transformer)
+        engine-outcome-data (m/decode engine-outcome-schema row combined-transformer)]
+    {:input input-data
+     :phaze-output phaze-output-data
+     :engine-outcome engine-outcome-data}))
+
+(defn read-sheet-assertions
+  "Read assertions from a single sheet using the three-step process"
+  [sheet phaze]
+  (let [;; Step 1: Read Excel to vector of maps
+        raw-data (read-excel-to-maps sheet)
+        
+        ;; Step 2: Build rename mapping and rename keys
+        rename-map (build-rename-keys-map phaze)
+        renamed-data (mapv #(rename-keys-in-map % rename-map) raw-data)
+        
+        ;; Step 3: Coerce with all schemas and merge
+        assertions (mapv #(coerce-and-merge % 
+                                           (:input phaze)
+                                           (:phaze-output phaze)
+                                           (:engine-outcome phaze))
+                        renamed-data)]
+    assertions))
 
 (defn excel->assertions
   "Convert Excel file to assertions structure"

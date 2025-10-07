@@ -1,5 +1,6 @@
 (ns converter
   (:require [malli.core :as m]
+            [malli.transform :as mt]
             [dk.ative.docjure.spreadsheet :as ss]
             [rules :as r]))
 
@@ -27,12 +28,15 @@
 
 (defn create-assertion-row
   "Create a data row from an assertion"
-  [phaze-id assertion input-props phaze-output-props engine-outcome-props]
-  (concat
-    [phaze-id]
-    (map #(get-in assertion [:input (:field %)]) input-props)
-    (map #(get-in assertion [:phaze-output (:field %)]) phaze-output-props)
-    (map #(get-in assertion [:engine-outcome (:field %)]) engine-outcome-props)))
+  [phaze-id assertion input-props phaze-output-props engine-outcome-props phaze]
+  (let [encoded-input (m/encode (:input phaze) (:input assertion) (mt/transformer {:name :excel}))
+        encoded-output (m/encode (:phaze-output phaze) (:phaze-output assertion) (mt/transformer {:name :excel}))
+        encoded-outcome (m/encode (:engine-outcome phaze) (:engine-outcome assertion) (mt/transformer {:name :excel}))]
+    (concat
+      [phaze-id]
+      (map #(get encoded-input (:field %)) input-props)
+      (map #(get encoded-output (:field %)) phaze-output-props)
+      (map #(get encoded-outcome (:field %)) engine-outcome-props))))
 
 (defn create-phaze-sheet
   "Create a sheet for a single phaze"
@@ -44,7 +48,7 @@
         headers (create-header-row input-props phaze-output-props engine-outcome-props (:id phaze))
         assertions (:assertions phaze-assertions)
         data-rows (if (seq assertions)
-                   (map #(create-assertion-row (:id phaze) % input-props phaze-output-props engine-outcome-props) 
+                   (map #(create-assertion-row (:id phaze) % input-props phaze-output-props engine-outcome-props phaze) 
                         assertions)
                    [(concat [(:id phaze)]
                            (repeat (count input-props) "")

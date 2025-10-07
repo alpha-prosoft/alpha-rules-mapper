@@ -1,4 +1,4 @@
-.PHONY: run gen
+.PHONY: run gen test
 
 run:
 	clojure -M -m main
